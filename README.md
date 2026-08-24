@@ -10,6 +10,8 @@ Proje; metin madenciliği, bilgi çıkarımı, metin sınıflandırma ve Retriev
 
 ---
 
+<img width="1150" height="599" alt="Ekran görüntüsü 2026-08-24 175633" src="https://github.com/user-attachments/assets/c5f7ad4a-5746-4fb6-beb6-68337db914be" />
+
 ## 🚀 Temel Özellikler
 
 ### 1. Çoklu Kaynaklı Veri Toplama
