@@ -1,12 +1,9 @@
 """
 Vakıf Katılım Kampanya Scraper
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
 
-Kullanım:
-    python vakifkatilim_scraper.py
-
-Çıktı:
-    data/vakifkatilim_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Vakıf Katılım platformunun
+kampanya verilerini toplar ve Doğal Dil İşleme (NLP) modüllerine hazır 
+yapısal (JSONL) formata dönüştürür.
 """
 
 import json
@@ -17,35 +14,38 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://www.vakifkatilim.com.tr"
 LISTE_URL = f"{BASE_URL}/tr/kendim-icin/kampanyalar"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "vakifkatilim_kampanyalar.jsonl")
 
-# ─── Selector'lar ────────────────────────────────────────────────────────────
+# Selector'lar (Frontend Elemanları)
 KAMPANYA_KART_SELECTOR = "a.card.card-md"
 DAHA_FAZLA_BTN_SELECTOR = "#load-more-btn"
 DETAY_BASLIK_SELECTOR = "div.hero-content h1"
 DETAY_TARIH_SELECTOR = "div.hero-content div.text-color-primary b"
-# Detay sayfasında hem Kampanya Detayları hem de Kampanya Şartları bölümlerini alacağız:
+
+# Veri Zenginleştirme: Detay sayfasındaki parçalı yapı (Kampanya Detayları ve Şartları) 
+# tek bir bağlamda (context) birleştirilerek RAG arama verimi artırılmıştır.
 DETAY_SECTIONS = [
     "#kampanya-detaylari .col-lg-8", 
     "#kampanya-sartlari .col-lg-8 .mask-area"
 ]
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Append (Streaming) modda yazılarak RAM şişmesi engellenir.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
     """
-    DOM'daki kampanya kartlarını çeker.
+    DOM ağacından liste özet bilgilerini çıkarır (Parsing).
     """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
@@ -64,10 +64,11 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_baslik": title,
                 "liste_ozet": None,
                 "liste_url": full_url,
-                "liste_bitis_tarihi": None, # Detay sayfasından alacağız
+                "liste_bitis_tarihi": None, # Detay sayfasından zenginleştirilecek
                 "liste_etiket": None,
             })
         except Exception as e:
+            # Kırık kartların (corrupted element) sistemi çökertmesini önler
             print(f"  [Kart parse hatası] {e}")
             continue
             
@@ -75,8 +76,9 @@ def extract_campaign_cards(page) -> list[dict]:
 
 def click_load_more(page) -> bool:
     """
-    'Daha Fazla Kampanya Gör' butonuna tıklar.
-    Buton d-none class'ı aldığında is_visible() False döner.
+    Sayfalama (Pagination) Kontrolü.
+    Buton HTML'den silinmediği ancak d-none class'ı alarak gizlendiği için 
+    is_visible() (görünürlük) state kontrolü kurgulanmıştır.
     """
     try:
         btn = page.query_selector(DAHA_FAZLA_BTN_SELECTOR)
@@ -97,7 +99,8 @@ def click_load_more(page) -> bool:
 
 def scrape_detail_page(page, url: str) -> dict:
     """
-    Detay sayfasına girip başlık, tarih ve tüm içeriği (şartlar dahil) çeker.
+    Bağlam Üretimi: Detay sayfasına girip başlık, tarih ve tüm alt şubeleri 
+    (şartlar dahil) çekerek LLM için zenginleştirilmiş metin (Rich Text) sunar.
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -111,7 +114,8 @@ def scrape_detail_page(page, url: str) -> dict:
         date_el = page.query_selector(DETAY_TARIH_SELECTOR)
         detail_date = date_el.inner_text().strip() if date_el else None
 
-        # İçerikteki "Tümünü Göster" vb. gereksiz UI butonlarını silelim
+        # DOM Manipülasyonu: İçerikteki "Tümünü Göster" vb. yapay zekaya 
+        # anlamsal hiçbir fayda sağlamayan gereksiz UI butonlarını siler.
         page.evaluate("""
             document.querySelectorAll('button.mask-area-open-btn').forEach(el => el.remove());
         """)
@@ -119,7 +123,7 @@ def scrape_detail_page(page, url: str) -> dict:
         raw_texts = []
         html_contents = []
 
-        # Hem detaylar hem de şartlar bölümlerini gezip birleştiriyoruz
+        # Parçalı Mimariyi Birleştirme (Aggregation)
         for section_selector in DETAY_SECTIONS:
             content_el = page.query_selector(section_selector)
             if content_el:
@@ -130,7 +134,7 @@ def scrape_detail_page(page, url: str) -> dict:
                     html_contents.append(html)
 
         if raw_texts:
-            # Birden fazla bölüm varsa aralarına boşluk bırakarak birleştir
+            # NLP Analizi için uygun formatlama (Boşluk/Satır optimizasyonu)
             detail_text = "\n\n".join(raw_texts)
             detail_html = "\n".join(html_contents)
         else:
@@ -153,11 +157,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Tekrarlı çalışmaları engellemek için Idempotent başlangıç
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -194,6 +199,7 @@ def main():
         print("\n[3/3] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Set mantığıyla O(1) hızında URL Deduplication (Tekilleştirme)
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
@@ -212,7 +218,7 @@ def main():
             print(f"    [{idx}/{len(unique_cards)}] İşleniyor: {url}")
             detail_data = scrape_detail_page(detail_page, url)
 
-            # Vakıf Katılım'da tarih bilgisini detay sayfasından çekiyoruz
+            # Bilgi Zenginleştirme: Liste kısmında olmayan tarihi detaydan liste objesine aktarma
             liste_bitis = detail_data.get("detay_tarih") if detail_data.get("detay_tarih") else card.get("liste_bitis_tarihi")
 
             record = {
