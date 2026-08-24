@@ -1,12 +1,9 @@
 """
-Emlak Katılım Kampanya Scraper
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Emlak Katılım Kampanya Scraper Modülü
 
-Kullanım:
-    python emlakkatilim_scraper.py
-
-Çıktı:
-    data/emlakkatilim_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Emlak Katılım Bankası'nın 
+web arayüzünden kampanya verilerinin toplanması ve Retrieval-Augmented Generation (RAG) 
+sistemine uygun yapısal formata (JSONL) dönüştürülmesi işlemini gerçekleştirir.
 """
 
 import json
@@ -17,32 +14,36 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://www.emlakkatilim.com.tr"
 LISTE_URL = f"{BASE_URL}/tr/bireysel/kampanyalar"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "emlakkatilim_kampanyalar.jsonl")
 
-# Selector'lar (Verilen HTML yapısına göre)
+# DOM Selectors (Frontend yapısındaki değişikliklere karşı merkezi yönetim)
 KAMPANYA_KART_SELECTOR = "article.campaign-card"
-# Emlak Katılım için 'Daha Fazla' butonu belirtilmedi, sayfa tek seferde yükleniyorsa None bırakıyoruz
+# Hedef sitede sayfalama (pagination) verisi tek seferde yüklendiği için None atanmıştır
 DAHA_FAZLA_BTN_SELECTOR = None 
-# Detay sayfasındaki başlık genellikle h1 olur, olmazsa karttaki class'ı fallback (yedek) olarak ekliyoruz
+# Detay sayfasındaki başlık h1 yapısında değilse, karttaki class fallback (yedek) olarak kullanılır
 DETAY_BASLIK_SELECTOR = "h1, h3.campaign-card__title"
 DETAY_METIN_SELECTOR = "div.searchContent"
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
 def ensure_dir(path: str) -> None:
+    # İlgili dizin mevcut değilse oluşturur (Dosya sistemi hatasını önler)
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Streaming yazma metodu: Verileri bellekte (RAM) biriktirmeden diske aktararak bellek şişmesini (OOM) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
     """
-    DOM'daki kampanya kartlarını çeker.
+    DOM'daki kampanya kartlarını gezer.
+    Sayfa mimarisinde eksik veri girilmesi durumunda pipeline'ın çökmesini 
+    önlemek için None fallback stratejisi uygulanır.
     """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
@@ -58,7 +59,7 @@ def extract_campaign_cards(page) -> list[dict]:
             href = link_el.get_attribute("href") if link_el else None
             full_url = urljoin(BASE_URL, href) if href else None
 
-            # Emlak Katılım liste kartında özet, tarih veya etiket HTML'i bulunmuyor.
+            # Emlak Katılım liste kartında özet, tarih veya etiket HTML'i bulunmadığı için None atanarak geçilir
             results.append({
                 "liste_baslik": title,
                 "liste_ozet": None,
@@ -67,6 +68,7 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": None,
             })
         except Exception as e:
+            # Hatalı DOM elemanını yoksayarak sürecin devam etmesini sağla
             print(f"  [Kart parse hatası] {e}")
             continue
             
@@ -74,7 +76,9 @@ def extract_campaign_cards(page) -> list[dict]:
 
 def scrape_detail_page(page, url: str) -> dict:
     """
-    Detay sayfasına girip başlık ve tam metni çeker.
+    Hedef sayfadan RAG bağlamı (context) üretimi için içerik çeker.
+    Network hatalarında veya kırık linklerde (404) ana akışın bozulmaması için
+    bağımsız hata yakalama bloklarıyla korunmuştur.
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -107,11 +111,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent yapı: Script tekrar çalıştığında verilerin üst üste binmesini (duplicate) önler
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -121,6 +126,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Anti-bot WAF sistemlerini atlatmak için Standart Kullanıcı User-Agent profili taklit edilir
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -143,6 +149,7 @@ def main():
         print("\n[2/2] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Veritabanı tutarlılığı için URL tabanlı tekrarlayan (duplicate) kayıt engelleme
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
