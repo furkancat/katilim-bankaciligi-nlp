@@ -52,8 +52,7 @@ Proje; metin madenciliği, bilgi çıkarımı, metin sınıflandırma ve Retriev
 
 ## 🏗️ Sistem Mimarisi
 
-<img width="1536" height="1024" alt="mimari" src="https://github.com/user-attachments/assets/3b113498-836e-46dc-9825-dae0df832ba3" />
-
+<img width="1536" height="1024" alt="mimari" src="https://github.com/user-attachments/assets/7a904290-32e5-4ba2-b3f2-e9c358e30b27" />
 
 ---
 
