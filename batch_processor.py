@@ -79,11 +79,11 @@ def process_batch(input_dir: str, output_file: str) -> None:
     success = 0
     failed = 0
     
-    print("============================================================")
+    print("=" * 60)
     print("BATCH PROCESSOR BAŞLATILIYOR")
     print(f"Girdi dizini: {input_dir}")
     print(f"Çıktı dosyası: {output_file}")
-    print("============================================================")
+    print("=" * 60)
     
     for record in read_jsonl_files(input_dir):
         total += 1
