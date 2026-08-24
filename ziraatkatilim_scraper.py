@@ -1,12 +1,10 @@
 """
-Ziraat Katılım Kampanya Scraper (GÜNCELLENMİŞ - SÜRESİ DOLANLAR HARİÇ)
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Ziraat Katılım Bankası Kampanya Scraper Modülü
 
-Kullanım:
-    python ziraatkatilim_scraper.py
-
-Çıktı:
-    data/ziraatkatilim_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Ziraat Katılım Bankası'nın 
+web arayüzünden güncel/aktif kampanya verilerinin toplanması ve yapısal 
+formata (JSONL) dönüştürülmesi işlemini gerçekleştirir. Süresi dolmuş 
+kampanyalar veri kirliliğini önlemek adına otomatik olarak filtrelenir.
 """
 
 import json
@@ -17,14 +15,15 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://www.ziraatkatilim.com.tr"
 LISTE_URL = f"{BASE_URL}/kart-kampanyalari"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "ziraatkatilim_kampanyalar.jsonl")
 
-# ─── Düzeltilmiş Selector'lar ────────────────────────────────────────────────
-# HATA DÜZELTİLDİ: "archived-item" (süresi dolmuş/gizli) sınıfına sahip olmayan kapsayıcıları seçiyoruz
+# DOM Selectors (Frontend yapısındaki değişikliklere karşı merkezi yönetim)
+# Veri kalitesini artırmak için 'archived-item' (süresi dolmuş/arşivlenmiş) 
+# sınıfına sahip DOM elemanları CSS seçici seviyesinde (not selector) dışarıda bırakılır.
 KAMPANYA_KART_SELECTOR = "div.campaign-item-wrapper:not(.archived-item) div.campaign-item"
 
 LISTE_BASLIK_SELECTOR = "div.front a.item-title"
@@ -35,16 +34,22 @@ DETAY_BASLIK_SELECTOR = "h1.node-title"
 DETAY_TARIH_SELECTOR = "div.campaign-period span.campaign-date"
 DETAY_METIN_SELECTOR = "div.body-content"
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
+# İlgili dizin mevcut değilse oluşturur (Dosya sistemi hatasını önler)
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Streaming yazma metodu: Verileri bellekte (RAM) biriktirmeden diske aktararak bellek şişmesini (OOM) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
+    """
+    DOM'daki kampanya kartlarını gezer ve ayrıştırır (parse).
+    Sayfa mimarisindeki eksik alanlara karşı None fallback stratejisi uygulanır.
+    """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
     
@@ -64,7 +69,9 @@ def extract_campaign_cards(page) -> list[dict]:
             date_el = card.query_selector(LISTE_TARIH_SELECTOR)
             date_text = date_el.inner_text().strip() if date_el else None
             
-            # Ekstra güvenlik kontrolü: Eğer metin içinde "Sonlanmıştır" geçiyorsa yine de atla
+            # Veri Tutarlılığı (Data Integrity) Kontrolü: 
+            # Frontend kodunda 'archived' class'ı unutulmuş olsa bile, metin bazlı 
+            # güvenlik kontrolü ile süresi dolmuş kampanyalar pipeline'a sokulmaz.
             date_full_text = card.query_selector("div.front p.item-date").inner_text() if card.query_selector("div.front p.item-date") else ""
             if "Sonlanmıştır" in date_full_text:
                 continue
@@ -77,12 +84,18 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": badge,
             })
         except Exception as e:
+            # Arızalı DOM elemanı yüzünden tüm veri hattının çökmesini engeller
             print(f"  [Kart parse hatası] {e}")
             continue
             
     return results
 
 def scrape_detail_page(page, url: str) -> dict:
+    """
+    Hedef detay sayfasından bağlam (context) üretimi için içerik çeker.
+    Network hatalarında veya 404 durumlarında ana akışın bozulmaması için 
+    hata yakalama bloklarıyla korunmuştur.
+    """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
         time.sleep(1)
@@ -120,11 +133,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent yapı: Script tekrar çalıştığında eski verilerin üst üste binmesini (duplicate) önler
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -134,6 +148,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Anti-bot ve WAF sistemlerini atlatmak için Standart Kullanıcı User-Agent profili taklit edilir
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -152,6 +167,7 @@ def main():
         print("\n[2/2] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Veritabanı tutarlılığı için URL tabanlı tekrarlayan (duplicate) kayıt engelleme mekanizması
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
@@ -170,6 +186,7 @@ def main():
             print(f"    [{idx}/{len(unique_cards)}] İşleniyor: {url}")
             detail_data = scrape_detail_page(detail_page, url)
 
+            # Sayfadan okunan tarih verilerinde önceliği detay sayfasına vererek veri doğruluğunu artırır
             liste_bitis = detail_data.get("detay_tarih") if detail_data.get("detay_tarih") else card.get("liste_bitis_tarihi")
 
             record = {
