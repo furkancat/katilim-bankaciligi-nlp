@@ -207,35 +207,7 @@ streamlit run app.py
 ### Mimari
 
 ```
-Kullanıcı Sorusu
-       │
-       ▼
-┌──────────────────┐
-│ Semantic Search  │ ← HuggingFace Embeddings
-│    (ChromaDB)    │
-│     MMR: k=12    │ ← Çeşitlilik garantisi
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Context Builder  │ ← Banka bilgisi ile zenginleştirilmiş
-│                  │   doğal dil metinleri
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  RAG Prompt      │ ← Sistem talimatları + bağlam
-│  + LLM (Ollama)  │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  Post-Processing │ ← "faiz"→"kâr payı", "kredi"→"finansman"
-│  (Terminoloji)   │
-└────────┬─────────┘
-         │
-         ▼
-    Kullanıcı Yanıtı
+<img width="1024" height="1536" alt="mimari2" src="https://github.com/user-attachments/assets/472f2561-4145-4e1a-8cc3-5de5850c7c15" />
 ```
 
 ### Güvenlik ve Doğruluk Önlemleri
