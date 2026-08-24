@@ -1,5 +1,5 @@
 """
-Türkiye Finans Kampanya Veri Toplama (Scraper) Modülü
+Türkiye Finans Kampanya Scraper Modülü
 
 Playwright otomasyon altyapısı kullanılarak, Türkiye Finans platformunun
 çoklu kategori tabanlı web arayüzünden kampanya verilerini toplayıp 
