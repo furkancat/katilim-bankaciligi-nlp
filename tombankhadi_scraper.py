@@ -1,6 +1,9 @@
 """
-TOM Bank Hadi Kampanya Scraper (GÜNCELLENMİŞ)
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+TOM Bank Hadi Kampanya Veri Toplama (Scraper) Modülü
+
+Playwright otomasyon altyapısı kullanılarak, TOM Bank Hadi platformunun
+dinamik web arayüzünden kampanya verilerinin toplanması ve NLP hattına (pipeline)
+uygun JSONL formatına dönüştürülmesi işlemini gerçekleştirir.
 """
 
 import json
@@ -11,52 +14,54 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://tombankhadi.com"
 LISTE_URL = f"{BASE_URL}/hadi-kazan/kampanyalar"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "tombankhadi_kampanyalar.jsonl")
 
-# ─── Düzeltilmiş Selector'lar ────────────────────────────────────────────────
+# DOM Selectors (Merkezi Seçici Yönetimi)
 KAMPANYA_KART_SELECTOR = "div.campaign-item"
 DAHA_FAZLA_BTN_SELECTOR = "button.show-more"
 DETAY_BASLIK_SELECTOR = "div.breadcrumb span:last-child, div.campaigns-detail h1"
 
-# HATA DÜZELTİLDİ: Sadece 'campaigns-detail' içindeki 'content' div'ini alarak
-# footer'daki "Biz Kimiz?" gibi alakasız yerlerin çekilmesi engellendi.
+# DOM Hata Toleransı: Sadece 'campaigns-detail' içindeki 'content' div'ini alarak 
+# footer'daki alakasız alanların (Örn: Biz Kimiz?) RAG bağlamını kirletmesi engellendi.
 DETAY_METIN_SELECTOR = "div.campaigns-detail div.content"
 
-# HATA DÜZELTİLDİ: Tarih için kapsama alanı genişletildi (bazen p bazen h tagi olabilir)
+# Yapısal Esneklik: Tarih bilgisinin farklı etiketlerde (p, h) bulunma ihtimaline karşı kapsama alanı genişletildi.
 DETAY_TARIH_SELECTOR = "div.campaigns-detail-date div.date" 
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
+# İlgili dizin mevcut değilse oluşturur (İşletim sistemi bağımsız dizin kontrolü)
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Verileri bellekte (RAM) biriktirmeden diske aktararak bellek darboğazını (Memory Bottleneck) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
     """
-    DOM'daki kampanya kartlarını çeker.
+    DOM ağacındaki kampanya kartlarını ayrıştırır (parse).
     """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
     
     for card in cards:
         try:
-            # HATA DÜZELTİLDİ: Başlık bazen h4, bazen h3 veya a etiketi içinde olabilir
+            # Fallback Stratejisi: Başlık bilgisi h4, h3 veya a etiketi içinde olabileceğinden zincirleme kontrol yapılır.
             title_el = card.query_selector("h4, h3, a[title]")
             title = title_el.inner_text().strip() if title_el else None
             
-            # Eğer yukarıdaki boş dönerse, kartın içindeki metni zorla al
+            # Dinamik Kurtarma: Üstteki seçiciler başarısız olursa, butonun önceki elemanından (DOM traversing) metin zorla çekilir.
             if not title:
                 alt_title = card.query_selector(".campaigns-detail-buttons").evaluate("el => el.previousElementSibling.innerText")
                 title = alt_title.strip() if alt_title else None
 
-            # Link
+            # Bağıl (Relative) URL'leri tam bağlantılara (Absolute) dönüştür
             link_el = card.query_selector("a")
             href = link_el.get_attribute("href") if link_el else None
             full_url = urljoin(BASE_URL, href) if href else None
@@ -69,18 +74,21 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": None,
             })
         except Exception as e:
+            # Sessiz hata yönetimi: Tek bir hatalı kartın genel işlemi durdurması engellendi.
             print(f"  [Kart parse hatası] {e}")
             continue
             
     return results
 
 def click_load_more(page) -> bool:
+    # Sayfalandırma (Pagination) Kontrolü: Gizli içerikleri açığa çıkarmak için tetikleyici kullanılır.
     try:
         btn = page.query_selector(DAHA_FAZLA_BTN_SELECTOR)
         if not btn: 
             return False
             
         btn.click()
+        # Ağ gecikmesi (Network Latency) ve DOM render süresi için asenkron bekleme
         time.sleep(1.5)
         return True
     except PlaywrightTimeout:
@@ -90,6 +98,7 @@ def click_load_more(page) -> bool:
         return False
 
 def scrape_detail_page(page, url: str) -> dict:
+    # LLM için kullanılacak nihai metin ve HTML bağlamının (Context) çıkarılması
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
         time.sleep(1)
@@ -97,12 +106,11 @@ def scrape_detail_page(page, url: str) -> dict:
         title_el = page.query_selector(DETAY_BASLIK_SELECTOR)
         detail_title = title_el.inner_text().strip() if title_el else None
         
-        # Tarih bilgisini alırken sadece içindeki rakam ve ayları almak için metni temizliyoruz
+        # Veri Temizleme (Data Cleansing): Regex veya replace ile NLP modelini yoracak ön ekler metinden arındırılır.
         date_el = page.query_selector(DETAY_TARIH_SELECTOR)
         detail_date = None
         if date_el:
             raw_date_text = date_el.inner_text().strip()
-            # "Kampanya Tarihleri\n08 Ağustos - 31 Ağustos 2026" şeklindeki yapıyı temizle
             detail_date = raw_date_text.replace("Kampanya Tarihleri", "").strip()
 
         content_el = page.query_selector(DETAY_METIN_SELECTOR)
@@ -129,11 +137,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent Tasarım: Script her çalıştığında temiz bir JSONL dosyası üretir, veriler duplicate olmaz.
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -143,6 +152,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Güvenlik (WAF/Cloudflare) atlatma için End-User maskeleme
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -170,6 +180,7 @@ def main():
         print("\n[3/3] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Hash tabanlı URL tekilleştirme (Deduplication) ile veri tabanı tutarlılığı sağlanır
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
@@ -188,7 +199,7 @@ def main():
             print(f"    [{idx}/{len(unique_cards)}] İşleniyor: {url}")
             detail_data = scrape_detail_page(detail_page, url)
 
-            # Tarih bilgisini detaydan liste objesine aktar
+            # Tarih bilgisini detaydan liste objesine aktar (Enrichment)
             liste_bitis = detail_data.get("detay_tarih") if detail_data.get("detay_tarih") else card.get("liste_bitis_tarihi")
 
             record = {
