@@ -1,8 +1,8 @@
 """
-Katılım Bankacılığı NLP Pipeline v6
+Katılım Bankacılığı NLP Pipeline
 LangGraph + Ollama (Qwen 2.5) Hibrit Bilgi Çıkarımı
 
-Düzeltmeler (v6):
+Düzeltmeler:
   - Şartname tablosundaki TÜM alanlar eklendi:
       • tahsis_ucreti (Finansman Bilgileri)
       • indirim_orani (Kampanya Bilgileri)
@@ -11,7 +11,9 @@ Düzeltmeler (v6):
   - LLM prompt'u yeni alanları içerecek şekilde güncellendi
   - Normalizer ve final_output yeni alanları işliyor
 
-TEKNOFEST 2026 - Türkçe Yapay Zeka Dil Ajanları Yarışması
+Bu modül; deterministik kural tabanlı (Regex) çıkarım ile olasılıksal Büyük Dil Modeli (LLM) 
+çıkarımını LangGraph mimarisi üzerinde birleştirerek halüsinasyonu en aza indiren 
+bir hibrit RAG (Retrieval-Augmented Generation) veri işleme hattıdır.
 """
 
 import json
@@ -30,7 +32,9 @@ except ImportError:
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-
+# Pipeline State (Durum Yönetimi):
+# İş akışındaki her bir düğümün (node) birbiriyle iletişim kurmasını ve
+# verinin (context) kaybolmadan akmasını sağlayan tip güvenli (type-safe) sözlük yapısı.
 class PipelineState(TypedDict):
     raw_text: str
     banka_adi: str
@@ -50,6 +54,9 @@ class PipelineState(TypedDict):
 # ─── Node 1: Regex Extractor ──────────────────────────────────────────────────
 
 class RegexExtractor:
+    # Deterministik Çıkarım (Kural Tabanlı Ön İşleme):
+    # LLM'lerin sayısal verilerde halüsinasyon yapma (uydurma) riskine karşı,
+    # finansal veriler ilk olarak kesin kurallı Regex (Düzenli İfadeler) ile taranır.
     PATTERNS = {
         "kar_payi_orani": re.compile(r"%(\d+[,.]?\d*)"),
         "vade_suresi": re.compile(r"(\d+)\s*(?:ay|aya|ayı)\s*(?:kadar|varan)?", re.IGNORECASE),
@@ -198,6 +205,8 @@ SADECE JSON:"""
 
 
 def _parse_llm_response(response: str) -> dict:
+    # Modelin olası markdown (```json) blokları üretmesi senaryosuna 
+    # karşı esnek (resilient) JSON ayrıştırma mantığı.
     if not response or not response.strip():
         raise ValueError("LLM boş yanıt döndürdü")
 
@@ -227,6 +236,8 @@ def _parse_llm_response(response: str) -> dict:
 
 
 def _sanitize_llm_output(data: dict) -> dict:
+    # LLM Sanatization: Modelin "yok", "belirsiz" gibi string olarak döndürdüğü
+    # veritabanına uymayan tipleri standart null değerlere zorlayan güvenlik filtresi.
     null_keywords = {"belirsiz", "dolaylı", "dolaylı ifade", "yok", "bilinmiyor", "null", "none", ""}
 
     cleaned = {}
@@ -287,6 +298,8 @@ def llm_extractor_node(state: PipelineState) -> PipelineState:
         regex_context=regex_context,
     )
 
+    # Hata Toleransı (Resilience): Yanıtın bozuk JSON gelmesi ihtimaline karşı 
+    # otomatik yeniden deneme (retry) mekanizması.
     max_retries = 2
     for attempt in range(max_retries):
         print(f"[LLM] {OLLAMA_MODEL} çağrılıyor... (deneme {attempt + 1}/{max_retries})")
@@ -320,6 +333,9 @@ def llm_extractor_node(state: PipelineState) -> PipelineState:
 # ─── Node 3: Validator ────────────────────────────────────────────────────────
 
 def validator_node(state: PipelineState) -> PipelineState:
+    # Veri Kalitesi (Data Quality) Kontrolü: 
+    # LLM ve Regex katmanından çıkan verilerin finansal mantığa
+    # oturup oturmadığını (örn. %50 üstü kâr payı olamaz) denetler.
     errors = []
     combined = dict(state["regex_results"])
     if state.get("llm_results"):
@@ -401,6 +417,8 @@ def _extract_max_tutar(text: str) -> Optional[str]:
     return None
 
 def _normalize_sayi(deger):
+    # Standardizasyon: Farklı kaynaklardan gelen binlik/ondalık ayraç formatlarını
+    # (nokta veya virgül) veritabanı ile uyumlu tek bir tip (float) yapıya dönüştürür.
     if not deger:
         return None
 
@@ -561,7 +579,7 @@ def main():
     sample = {
         "kaynak": "albaraka_turk",
         "banka_adi": "Albaraka Türk Katılım Bankası",
-        "url": "https://www.albaraka.com.tr/tr/kampanyalar/detay/vade-farksiz-kampanyasi",
+        "url": "[https://www.albaraka.com.tr/tr/kampanyalar/detay/vade-farksiz-kampanyasi](https://www.albaraka.com.tr/tr/kampanyalar/detay/vade-farksiz-kampanyasi)",
         "liste_etiket": "Yeni Müşterilere Özel",
         "liste_bitis_tarihi": "Son gün 31 Aralık",
         "detay_metin": (
