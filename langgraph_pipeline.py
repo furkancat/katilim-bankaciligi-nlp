@@ -51,7 +51,7 @@ class PipelineState(TypedDict):
     retry_count: int
 
 
-# ─── Node 1: Regex Extractor ──────────────────────────────────────────────────
+# Node 1: Regex Extractor
 
 class RegexExtractor:
     # Deterministik Çıkarım (Kural Tabanlı Ön İşleme):
@@ -128,7 +128,7 @@ def regex_extractor_node(state: PipelineState) -> PipelineState:
     return state
 
 
-# ─── Node 2: LLM Extractor (Her Zaman Çalışır + Regex Context) ───────────────
+# Node 2: LLM Extractor (Her Zaman Çalışır + Regex Context)
 
 EXTRACTION_PROMPT = """Sen bir katılım bankacılığı finansal analistisin. 
 Aşağıdaki kampanya metnini analiz et ve KESİNLİKLE geçerli JSON çıktısı üret.
@@ -330,7 +330,7 @@ def llm_extractor_node(state: PipelineState) -> PipelineState:
     return state
 
 
-# ─── Node 3: Validator ────────────────────────────────────────────────────────
+# Node 3: Validator
 
 def validator_node(state: PipelineState) -> PipelineState:
     # Veri Kalitesi (Data Quality) Kontrolü: 
@@ -404,7 +404,7 @@ def validator_node(state: PipelineState) -> PipelineState:
     return state
 
 
-# ─── Node 4: Normalizer (v6 — Tüm şartname alanları) ─────────────────────────
+# Node 4: Normalizer
 
 def _extract_max_tutar(text: str) -> Optional[str]:
     range_pattern = re.compile(
@@ -479,7 +479,7 @@ def normalizer_node(state: PipelineState) -> PipelineState:
 
     puan_raw = pick("alisveris_puani", "alisveris_puani")
 
-    # ─── KESİN İŞ KURALI ─────────────────────────────────────────
+    # KESİN İŞ KURALI
     kampanya_turu = llm.get("kampanya_turu") if llm else "Diger"
     ham_metin_kucuk = state["raw_text"].lower()
 
@@ -509,8 +509,7 @@ def normalizer_node(state: PipelineState) -> PipelineState:
             kar_norm = None
             tahsis_raw = None
             tahsis_norm = None
-    # ─────────────────────────────────────────────────────────────
-
+  
     # Kampanya süresi
     sure = pick("kampanya_suresi")
     if not sure and state.get("liste_bitis_tarihi"):
@@ -554,7 +553,7 @@ def normalizer_node(state: PipelineState) -> PipelineState:
     return state
 
 
-# ─── Graph Build (v6) ────────────────────────────────────────────────────────
+# Graph Build
 
 def build_pipeline():
     workflow = StateGraph(PipelineState)
@@ -573,7 +572,7 @@ def build_pipeline():
     return workflow.compile()
 
 
-# ─── CLI / Demo ──────────────────────────────────────────────────────────────
+# CLI / Demo
 
 def main():
     sample = {
