@@ -1,12 +1,9 @@
-#!/usr/bin/env python3
 """
-Batch Processor — Tüm Kampanya Verisini Pipeline'dan Geçirme
+Toplu Veri İşleme (Batch Processing) Modülü
 
-Kullanım:
-    python batch_processor.py --input data/raw/ --output data/structured_kampanyalar.jsonl
-
-Girdi:  Scraper'ın ürettiği ham JSONL dosyaları (banka başına bir dosya)
-Çıktı:  Pipeline'dan geçmiş yapılandırılmış JSONL (tüm bankalar bir arada)
+Bu modül, farklı scraper'lar tarafından elde edilen ham JSONL verilerini toplu olarak okur,
+LangGraph pipeline'ından geçirerek (Regex + LLM) yapılandırır ve temizlenmiş veriyi
+vektör veritabanına beslenmeye hazır tek bir JSONL dosyasında birleştirir.
 """
 
 import json
@@ -18,9 +15,12 @@ from typing import Iterator
 
 from langgraph_pipeline import build_pipeline, PipelineState
 
-
 def read_jsonl_files(input_dir: str) -> Iterator[dict]:
-    """Bir dizindeki tüm .jsonl dosyalarını okur."""
+    """
+    Bellek (RAM) Taşması Önlemi:
+    Tüm dosyaları aynı anda belleğe yüklemek yerine, yield (generator) mantığıyla 
+    satır satır okuma (streaming) yapılarak bellek tüketimi minimumda tutulur.
+    """
     pattern = os.path.join(input_dir, "*.jsonl")
     files = glob.glob(pattern)
     
@@ -37,10 +37,15 @@ def read_jsonl_files(input_dir: str) -> Iterator[dict]:
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError as e:
-                        print(f"  [HATA] JSON parse: {e}")
-
+                        # Kirli (corrupted) verilerin tüm işlem hattını durdurmasını engelle
+                        print(f"  [HATA] JSON ayrıştırma başarısız: {e}")
 
 def build_state(record: dict) -> PipelineState:
+    """
+    Ham veriden pipeline durum (state) nesnesi oluşturur.
+    Farklı bankaların DOM yapıları farklı olduğu için, içeriğin bulunabileceği 
+    olası tüm alanlar (detay_metin, liste_ozet, liste_baslik) fallback mantığıyla taranır.
+    """
     return {
         "raw_text": record.get("detay_metin") or record.get("liste_ozet") or record.get("liste_baslik") or "",
         "banka_adi": record.get("banka_adi", "Bilinmiyor"),
@@ -57,11 +62,16 @@ def build_state(record: dict) -> PipelineState:
         "retry_count": 0,
     }
 
-
 def process_batch(input_dir: str, output_file: str) -> None:
+    """
+    Tüm veriyi LangGraph iş akışından geçirir.
+    Veri kaybını önlemek için başarılı işlemler ayrı, hatalı (exception fırlatan)
+    işlemler ise analiz edilebilmesi için .errors uzantılı ayrı bir log dosyasına yazılır.
+    """
     app = build_pipeline()
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     
+    # Idempotency (Tekrarlanabilirlik): Script her çalıştığında temiz bir başlangıç yapar.
     if os.path.exists(output_file):
         os.remove(output_file)
     
@@ -69,11 +79,11 @@ def process_batch(input_dir: str, output_file: str) -> None:
     success = 0
     failed = 0
     
-    print("=" * 60)
+    print("============================================================")
     print("BATCH PROCESSOR BAŞLATILIYOR")
     print(f"Girdi dizini: {input_dir}")
     print(f"Çıktı dosyası: {output_file}")
-    print("=" * 60)
+    print("============================================================")
     
     for record in read_jsonl_files(input_dir):
         total += 1
@@ -87,6 +97,8 @@ def process_batch(input_dir: str, output_file: str) -> None:
             result = app.invoke(state)
             final = result["final_output"]
             
+            # Semantik arama (RAG) esnasında bağlam zenginliğini artırmak için
+            # yapılandırılmış verinin içine ham HTML içerikleri de (metadata olarak) gömülür.
             output_record = {
                 **final,
                 "_ham_veri": {
@@ -105,6 +117,8 @@ def process_batch(input_dir: str, output_file: str) -> None:
         except Exception as e:
             failed += 1
             print(f"    ❌ HATA: {e}")
+            
+            # Hata ayıklama (Debugging) için başarısız kayıtlar orijinal halleriyle saklanır
             error_record = {
                 "_error": str(e),
                 "_raw_record": record,
@@ -121,7 +135,6 @@ def process_batch(input_dir: str, output_file: str) -> None:
     print(f"  Çıktı:    {output_file}")
     print("=" * 60)
 
-
 def main():
     parser = argparse.ArgumentParser(description="Kampanya verisini batch işle")
     parser.add_argument("--input", default="data/raw", help="Ham JSONL dosyalarının dizini")
@@ -129,7 +142,6 @@ def main():
     args = parser.parse_args()
     
     process_batch(args.input, args.output)
-
 
 if __name__ == "__main__":
     main()
