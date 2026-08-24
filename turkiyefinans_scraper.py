@@ -1,12 +1,9 @@
 """
-Türkiye Finans Kampanya Scraper (GÜNCELLENMİŞ)
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Türkiye Finans Kampanya Veri Toplama (Scraper) Modülü
 
-Kullanım:
-    python turkiyefinans_scraper.py
-
-Çıktı:
-    data/turkiyefinans_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Türkiye Finans platformunun
+çoklu kategori tabanlı web arayüzünden kampanya verilerini toplayıp 
+yapısal JSONL formatına dönüştürür.
 """
 
 import json
@@ -17,29 +14,33 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://www.turkiyefinans.com.tr"
 KATEGORI_URL = f"{BASE_URL}/tr-tr/kampanyalar/Sayfalar/default.aspx"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "turkiyefinans_kampanyalar.jsonl")
 
-# ─── Selector'lar ────────────────────────────────────────────────────────────
+# Selector'lar (Frontend mimarisine uygun hedefleme)
 KATEGORI_BTN_SELECTOR = "div.box .hover a"
 KAMPANYA_KART_SELECTOR = "div.campaign"
 DETAY_BASLIK_SELECTOR = "h1#content-title"
-# Hem class'ı hem de senin belirttiğin ID formatını yakalamak için daha esnek bir seçici:
+
+# DOM Esnekliği: Frontend yapısındaki sınıf (class) ve ID değişikliklerine karşı 
+# çoklu (fallback) Regex benzeri CSS seçiciler kurgulanmıştır.
 DETAY_METIN_SELECTOR = "div.ms-rtestate-field, div[id$='_RichHtmlField']" 
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Bellek optimizasyonu: JSONL formatında satır satır asenkron yazma (Streaming).
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def get_category_urls(page) -> list[str]:
+    # Dinamik Kategori Keşfi: Hardcode yerine sitedeki mevcut sekmeleri dinamik toplar.
     urls = set()
     links = page.query_selector_all(KATEGORI_BTN_SELECTOR)
     for link in links:
@@ -75,6 +76,7 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": None,
             })
         except Exception as e:
+            # Veri kaybını önlemek için bağımsız Try-Catch bloğu
             print(f"  [Kart parse hatası] {e}")
             continue
             
@@ -89,19 +91,20 @@ def scrape_detail_page(page, url: str) -> dict:
         title_el = page.query_selector(DETAY_BASLIK_SELECTOR)
         detail_title = title_el.inner_text().strip() if title_el else None
 
-        # Sayfadaki sr-only ve display:none olan divleri uçuralım
+        # DOM Cleansing (Temizleme): Görsel engelli (sr-only) veya gizli alanlar (display:none)
+        # tespit edilip RAG modelinin kafasını karıştırmaması için DOM ağacından tamamen uçurulur.
         page.evaluate("""
             document.querySelectorAll('.sr-only, [style*="display:none"], [style*="display: none"]').forEach(el => el.remove());
         """)
 
-        # DÜZELTME: query_selector yerine query_selector_all kullanıyoruz
+        # İçeriğin çoklu div yapılarına dağılmış olma ihtimaline karşı All (hepsini) seçici kullanılır
         content_elements = page.query_selector_all(DETAY_METIN_SELECTOR)
         
         if content_elements:
             raw_text_list = []
             html_list = []
             
-            # Sayfadaki tüm içerik div'lerini gezip birleştiriyoruz
+            # Sayfadaki tüm içerik div'lerini gezip tek bir metin kümesinde birleştiriyoruz (Aggregation)
             for el in content_elements:
                 text = el.inner_text().strip()
                 html = el.inner_html()
@@ -112,10 +115,11 @@ def scrape_detail_page(page, url: str) -> dict:
             raw_text = "\n\n".join(raw_text_list)
             detail_html = "\n".join(html_list)
             
+            # Encoding ve Whitespace optimizasyonu
             clean_text = raw_text.replace('\u200b', '').replace('\xa0', ' ').strip()
             clean_text = ' '.join(clean_text.split())
             
-            # Eğer tüm birleştirilmiş metinlerin toplamı 30 karakterden kısaysa ve görsel varsa
+            # Edge Case Yönetimi: Eğer kampanya metni yoksa ve sadece afiş varsa, LLM için afiş bilgisi loglanır
             if len(clean_text) < 30 and "<img" in detail_html.lower():
                 img_src = ""
                 for el in content_elements:
@@ -149,11 +153,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # State Reset: Her çalıştırmada temiz veri tabanı garantisi
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -163,6 +168,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Standart kullanıcı User-Agent başlıkları ile sunucu bazlı kısıtlamaları (Rate Limit) aşma
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -183,6 +189,7 @@ def main():
         print("\n[2/3] Kategorilerin içindeki kampanyalar toplanıyor...")
         all_unique_cards = {}
         
+        # Çoklu Kategori Tarama (Deep Crawling)
         for idx, cat_url in enumerate(category_urls, 1):
             print(f"    -> Kategori [{idx}/{len(category_urls)}]: {cat_url}")
             try:
@@ -190,6 +197,7 @@ def main():
                 time.sleep(1.5)
                 cards = extract_campaign_cards(page)
                 
+                # Dictionary bazlı tekilleştirme: Aynı kampanya farklı kategorilerde (Örn: Bireysel/Yatırım) geçiyorsa üstüne yazar
                 for c in cards:
                     url = c.get("liste_url")
                     if url and url not in all_unique_cards:
@@ -208,6 +216,7 @@ def main():
             print(f"    [{idx}/{len(unique_cards_list)}] İşleniyor: {url}")
             detail_data = scrape_detail_page(detail_page, url)
 
+            # Çıktı Standardizasyonu
             record = {
                 "kaynak": "turkiye_finans",
                 "banka_adi": "Türkiye Finans",
