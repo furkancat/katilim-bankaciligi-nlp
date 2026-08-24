@@ -206,9 +206,7 @@ streamlit run app.py
 
 ### Mimari
 
-```
 <img width="1024" height="1536" alt="mimari2" src="https://github.com/user-attachments/assets/472f2561-4145-4e1a-8cc3-5de5850c7c15" />
-```
 
 ### Güvenlik ve Doğruluk Önlemleri
 
