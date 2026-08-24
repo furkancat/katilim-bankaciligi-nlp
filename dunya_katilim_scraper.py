@@ -1,12 +1,9 @@
 """
-Dünya Katılım Bankası Kampanya Scraper
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Dünya Katılım Bankası Veri Toplama (Scraper) Modülü
 
-Kullanım:
-    python dunya_katilim_scraper.py
-
-Çıktı:
-    data/dunya_katilim_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Dünya Katılım Bankası'nın 
+dinamik web arayüzünden kampanya verilerinin toplanması ve yapısal formata 
+(JSONL) dönüştürülmesi işlemini gerçekleştirir.
 """
 
 import json
@@ -17,7 +14,7 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://dunyakatilim.com.tr"
 LISTE_URL = f"{BASE_URL}/kampanyalar"
 CIKTI_DIZINI = "data"
@@ -29,18 +26,22 @@ DAHA_FAZLA_BTN_SELECTOR = "#moreCampaigns"
 DETAY_BASLIK_SELECTOR = "h1.campaign-detail-header-left-title"
 DETAY_METIN_SELECTOR = "div.page-content-list .page-left-content"
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
+# İlgili dizin mevcut değilse oluşturur (Dosya sistemi hatasını önler)
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Streaming yazma metodu: Verileri bellekte (RAM) biriktirmeden diske aktararak bellek şişmesini (OOM) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
     """
     DOM'daki kampanya kartlarını çeker.
+    Sayfa mimarisinde eksik veri girilmesi (örn. bitiş tarihinin yazılmaması)
+    durumunda pipeline'ın çökmesini önlemek için None fallback stratejisi uygulanır.
     """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
@@ -75,6 +76,7 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": badge,
             })
         except Exception as e:
+            # Hatalı DOM elemanını yoksayarak sürecin devam etmesini sağla
             print(f"  [Kart parse hatası] {e}")
             continue
     return results
@@ -82,7 +84,8 @@ def extract_campaign_cards(page) -> list[dict]:
 def click_load_more(page) -> bool:
     """
     'Daha Fazla' butonuna tıklar.
-    display: none olduğunda Playwright'ın is_visible() metodu False döner.
+    Sayfa sonu tespiti (Pagination Control): Dünya Katılım web sitesi, butonun HTML'ini 
+    silmek yerine 'display: none' ile gizlediği için is_visible() durumu kontrol edilir.
     """
     try:
         btn = page.query_selector(DAHA_FAZLA_BTN_SELECTOR)
@@ -94,6 +97,7 @@ def click_load_more(page) -> bool:
             return False
             
         btn.click()
+        # Sunucu ağ gecikmesini (Network Latency) tolere etmek için bekleme payı
         time.sleep(1.5) # AJAX yüklemesi için tolerans
         return True
     except PlaywrightTimeout:
@@ -105,6 +109,8 @@ def click_load_more(page) -> bool:
 def scrape_detail_page(page, url: str) -> dict:
     """
     Detay sayfasına girip başlık ve tam metni çeker.
+    Network hatalarında veya kırık linklerde (404) ana akışın bozulmaması için
+    bağımsız hata yakalama bloklarıyla korunmuştur.
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -137,11 +143,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent yapı: Script tekrar çalıştığında verilerin üst üste binmesini (duplicate) önler
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -151,6 +158,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Anti-bot WAF sistemlerini atlatmak için Standart Kullanıcı User-Agent profili taklit edilir
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -178,6 +186,7 @@ def main():
         print("\n[3/3] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Veritabanı tutarlılığı için URL tabanlı tekrarlayan (duplicate) kayıt engelleme
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
