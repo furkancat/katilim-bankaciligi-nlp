@@ -50,50 +50,82 @@ Proje; metin madenciliği, bilgi çıkarımı, metin sınıflandırma ve Retriev
 
 ## 🏗️ Sistem Mimarisi
 
-```mermaid
-flowchart TD
-    subgraph Veri_Toplama [Veri Toplama Katmanı - Playwright]
-        direction LR
-        A1(Albaraka)
-        A2(Dünya Katılım)
-        A3(Kuveyt Türk)
-        A4(Ziraat)
-        A5(Vakıf Katılım)
-        A6(TR Finans)
-        A7(Emlak)
-        A8(Hayat)
-        A9(TOM Bank)
-    end
-
-    B[(Ham Veri\n data/raw/*.jsonl)]
-
-    subgraph Pipeline [NLP Pipeline - LangGraph]
-        direction TB
-        C1[1. Regex Extractor]
-        C2[2. LLM Extractor\n Qwen 2.5]
-        C3[3. Validator]
-        C4[4. Normalizer]
-        C1 --> C2 --> C3 --> C4
-    end
-
-    D[(Yapılandırılmış Veri\n structured.jsonl)]
-
-    subgraph Arayuz_ve_DB [Uygulama ve Depolama]
-        direction LR
-        E[(ChromaDB\n Vektör DB)]
-        F[Batch Processor]
-        G[Streamlit UI]
-    end
-
-    H{RAG Chatbot\n Ollama LLM}
-
-    Veri_Toplama --> B
-    B --> C1
-    C4 --> D
-    D --> E
-    D --> F
-    D --> G
-    E --> H
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        VERİ TOPLAMA KATMANI                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │
+│  │ Albaraka │ │ Dünya    │ │ Kuveyt   │ │ Ziraat   │ │ Vakıf   │ │
+│  │ Türk     │ │ Katılım  │ │ Türk     │ │ Katılım  │ │ Katılım │ │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐              │
+│  │ Türkiye  │ │ Emlak    │ │ Hayat    │ │ TOM      │              │
+│  │ Finans   │ │ Katılım  │ │ Finans   │ │ Bank     │              │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘              │
+└───────┼────────────┼────────────┼────────────┼────────────────────┘
+        │            │            │            │
+        └────────────┴──────┬─────┴────────────┘
+                            ▼
+              ┌─────────────────────────────┐
+              │   HAM VERİ (JSON Lines)     │
+              │   data/raw/*.jsonl          │
+              └──────────────┬──────────────┘
+                             │
+                             ▼
+              ┌─────────────────────────────┐
+              │   NLP PIPELINE (LangGraph)  │
+              │                             │
+              │  ┌───────────────────────┐    │
+              │  │ 1. Regex Extractor    │    │
+              │  │    (Hızlı ön filtre)  │    │
+              │  └───────────┬───────────┘    │
+              │              ▼                │
+              │  ┌───────────────────────┐    │
+              │  │ 2. LLM Extractor    │    │
+              │  │    (Qwen 2.5 /       │    │
+              │  │     Ollama)          │    │
+              │  └───────────┬───────────┘    │
+              │              ▼                │
+              │  ┌───────────────────────┐    │
+              │  │ 3. Validator        │    │
+              │  │    (Mantıksal kontrol)│   │
+              │  └───────────┬───────────┘    │
+              │              ▼                │
+              │  ┌───────────────────────┐    │
+              │  │ 4. Normalizer         │    │
+              │  │    (Standart format)  │    │
+              │  └───────────┬───────────┘    │
+              └──────────────┼──────────────┘
+                             │
+                             ▼
+              ┌─────────────────────────────┐
+              │ YAPIILANDIRILMIŞ VERİ       │
+              │ data/structured_*.jsonl     │
+              └──────────────┬──────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+    ┌─────────────────┐ ┌─────────────┐ ┌──────────────┐
+    │  EMBEDDING      │ │   BATCH     │ │   STREAMLIT  │
+    │  (HuggingFace)  │ │  PROCESSOR  │ │  DASHBOARD   │
+    │                 │ │             │ │              │
+    │  ┌───────────┐  │ │  Tüm veriyi │ │  Interaktif  │
+    │  │ ChromaDB  │  │ │  pipeline'dan│ │  web arayüzü │
+    │  │ Vektör DB │  │ │  geçirme    │ │              │
+    │  └─────┬─────┘  │ └─────────────┘ └──────────────┘
+    └────────┼────────┘
+             │
+             ▼
+    ┌─────────────────┐
+    │   RAG CHATBOT   │
+    │                 │
+    │  ┌───────────┐  │
+    │  │  Ollama   │  │
+    │  │  (Lokal)  │  │
+    │  │  LLM      │  │
+    │  └───────────┘  │
+    └─────────────────┘
+```
 
 ---
 
