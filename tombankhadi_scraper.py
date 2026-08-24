@@ -1,5 +1,5 @@
 """
-TOM Bank Hadi Kampanya Veri Toplama (Scraper) Modülü
+TOM Bank Hadi Kampanya Scraper
 
 Playwright otomasyon altyapısı kullanılarak, TOM Bank Hadi platformunun
 dinamik web arayüzünden kampanya verilerinin toplanması ve NLP hattına (pipeline)
