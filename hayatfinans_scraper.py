@@ -1,12 +1,8 @@
 """
-Hayat Finans Kampanya Scraper
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Hayat Finans Kampanya Scraper Modülü
 
-Kullanım:
-    python hayatfinans_scraper.py
-
-Çıktı:
-    data/hayatfinans_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Hayat Finans'ın dinamik web arayüzünden 
+kampanya verilerinin toplanması ve yapısal formata (JSONL) dönüştürülmesi işlemini gerçekleştirir.
 """
 
 import json
@@ -17,26 +13,28 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://hayatfinans.com.tr"
 LISTE_URL = f"{BASE_URL}/kampanyalar"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "hayatfinans_kampanyalar.jsonl")
 
-# Selector'lar (Chakra UI hash'lenmiş class'lara karşı dayanıklı seçiciler)
-# Kampanya kartlarını bulmak için '/kampanyalar/' içeren linkleri arıyoruz
+# Selector'lar (Chakra UI tarafından oluşturulan karmaşık class'lara karşı dayanıklı seçiciler)
+# Vektör veritabanını kirletmemek için '/kampanyalar/' içermeyen alakasız linkler (noise) filtrelenir
 KAMPANYA_KART_SELECTOR = "a.chakra-link[href*='/kampanyalar/']" 
-# Hayat Finans'ta "Daha Fazla" butonu yoksa veya sonsuz kaydırma varsa burası esnek bırakıldı
+# Sayfalama butonu tespit edilemezse veya infinite-scroll varsa süreç esnek bırakılır
 DAHA_FAZLA_BTN_SELECTOR = None 
 DETAY_BASLIK_SELECTOR = "#detailPageSection div.chakra-text.hf-0, p.gradientTitle"
 DETAY_METIN_SELECTOR = "#detailPageMain"
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
 def ensure_dir(path: str) -> None:
+    # İlgili dizin mevcut değilse oluşturur (Dosya sistemi hatasını önler)
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Streaming yazma metodu: Verileri bellekte (RAM) biriktirmeden diske aktararak bellek şişmesini (OOM) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -49,7 +47,7 @@ def extract_campaign_cards(page) -> list[dict]:
     
     for card in cards:
         try:
-            # Sadece detay sayfasına giden linkleri filtrele (örn: /kampanyalar/arkadasini-getir...)
+            # Sadece detay sayfasına giden spesifik linkleri filtrele (örn: /kampanyalar/arkadasini-getir...)
             href = card.get_attribute("href")
             if not href or href == "/kampanyalar" or href == "/kampanyalar/":
                 continue
@@ -64,8 +62,8 @@ def extract_campaign_cards(page) -> list[dict]:
             badge_el = card.query_selector("div.hf-om6zad")
             badge = badge_el.inner_text().strip() if badge_el else None
 
-            # Bitiş tarihi ve özet Hayat Finans liste HTML'inde net değilse None bırakıyoruz, 
-            # detay sayfasından zaten alınacak.
+            # Hayat Finans liste HTML'inde bitiş tarihi ve özet net değilse None bırakılır, 
+            # asıl veri LLM pipeline'ında detay sayfasından parse edilir.
             
             results.append({
                 "liste_baslik": title,
@@ -75,6 +73,7 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": badge,
             })
         except Exception as e:
+            # Hatalı DOM elemanını yoksayarak sürecin devam etmesini sağla
             print(f"  [Kart parse hatası] {e}")
             continue
             
@@ -83,16 +82,18 @@ def extract_campaign_cards(page) -> list[dict]:
 def scrape_detail_page(page, url: str) -> dict:
     """
     Detay sayfasına girip başlık ve tam metni çeker.
+    Network hatalarında veya kırık linklerde (404) ana akışın bozulmaması için
+    bağımsız hata yakalama bloklarıyla korunmuştur.
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
         time.sleep(1)
 
-        # Başlık (Spesifik class hf-0 veya fallback)
+        # Başlık (Spesifik class hf-0 veya fallback seçicisi kullanılarak)
         title_el = page.query_selector(DETAY_BASLIK_SELECTOR)
         detail_title = title_el.inner_text().strip() if title_el else None
 
-        # İçerik Metni ve HTML (#detailPageMain içinde tüm detaylar var)
+        # İçerik Metni ve HTML (#detailPageMain içinde DOM'un taşıdığı tüm detaylar)
         content_el = page.query_selector(DETAY_METIN_SELECTOR)
         if content_el:
             detail_text = content_el.inner_text().strip()
@@ -115,11 +116,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent yapı: Script tekrar çalıştığında verilerin üst üste binmesini (duplicate) önler
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -129,6 +131,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Anti-bot WAF sistemlerini atlatmak için Standart Kullanıcı User-Agent profili taklit edilir
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -142,12 +145,13 @@ def main():
         print(f"\n[1/2] Liste sayfası yükleniyor: {LISTE_URL}")
         page.goto(LISTE_URL, wait_until="domcontentloaded", timeout=30000)
         
-        # Sayfanın tamamen render olması için kısa bir bekleme süresi
+        # Sayfanın tamamen render olması ve dinamik içeriklerin yerleşmesi için bekleme payı
         time.sleep(3) 
 
         print("\nKampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Veritabanı tutarlılığı için URL tabanlı tekrarlayan (duplicate) kayıt engelleme
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
