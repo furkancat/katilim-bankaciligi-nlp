@@ -1,12 +1,8 @@
 """
-Kuveyt Türk Kampanya Scraper
-TEKNOFEST Türkçe Yapay Zeka Dil Ajanları Yarışması - Veri Toplama Modülü (2. Senaryo)
+Kuveyt Türk Kampanya Scraper Modülü
 
-Kullanım:
-    python kuveytturk_scraper.py
-
-Çıktı:
-    data/kuveytturk_kampanyalar.jsonl
+Playwright otomasyon altyapısı kullanılarak, Kuveyt Türk'ün dinamik web arayüzünden 
+kampanya verilerinin toplanması ve yapısal formata (JSONL) dönüştürülmesi işlemini gerçekleştirir.
 """
 
 import json
@@ -17,31 +13,34 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── Konfigürasyon ───────────────────────────────────────────────────────────
+# Konfigürasyon
 BASE_URL = "https://www.kuveytturk.com.tr"
 LISTE_URL = f"{BASE_URL}/kampanyalar/kendim-icin"
 CIKTI_DIZINI = "data"
 CIKTI_DOSYASI = os.path.join(CIKTI_DIZINI, "kuveytturk_kampanyalar.jsonl")
 
-# Selector'lar (Verilen HTML yapısına göre)
+# DOM Selectors (Frontend yapısındaki değişikliklere karşı merkezi yönetim)
 KAMPANYA_KART_SELECTOR = "div.campaign-item"
 DAHA_FAZLA_BTN_SELECTOR = "a.load-more-btn"
 DETAY_BASLIK_SELECTOR = "h1#pageTitle"
-# Detay sayfasında sol taraftaki paylaşım/tarih kısımlarını almamak için doğrudan asıl metin alanını hedefliyoruz:
+# Detay sayfasında sol taraftaki paylaşım/tarih gibi gereksiz DOM bloklarını almamak için doğrudan asıl metin hedeflenir:
 DETAY_METIN_SELECTOR = "div.col-12.col-lg.search-content" 
 
-# ─── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+# Yardımcı Fonksiyonlar
 
 def ensure_dir(path: str) -> None:
+    # İlgili dizin mevcut değilse oluşturur (Dosya sistemi hatasını önler)
     os.makedirs(path, exist_ok=True)
 
 def write_jsonl(filepath: str, record: dict) -> None:
+    # Streaming yazma metodu: Verileri bellekte (RAM) biriktirmeden diske aktararak bellek şişmesini (OOM) önler.
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def extract_campaign_cards(page) -> list[dict]:
     """
     DOM'daki kampanya kartlarını çeker.
+    Eksik veri girilmesi durumunda pipeline'ın çökmesini önlemek için None fallback stratejisi uygulanır.
     """
     cards = page.query_selector_all(KAMPANYA_KART_SELECTOR)
     results = []
@@ -60,11 +59,11 @@ def extract_campaign_cards(page) -> list[dict]:
             summary_el = card.query_selector("div.description")
             summary = summary_el.inner_text().strip() if summary_el else None
 
-            # Bitiş tarihi (HTML'de "Kampanya Aralığı: ..." şeklinde geliyor)
+            # Bitiş tarihi (Veri kalitesini artırmak için HTML'deki "Kampanya Aralığı: " etiketleri temizlenir)
             date_el = card.query_selector("div.date")
             date_text = date_el.inner_text().replace("Kampanya Aralığı:", "").strip() if date_el else None
 
-            # Etiket / Kategori (Kuveyt Türk kartlarında belirgin bir badge yok, None geçiyoruz)
+            # Etiket / Kategori (Kuveyt Türk kartlarında belirgin bir badge (etiket) olmadığı için None geçilir)
             badge = None
 
             results.append({
@@ -75,6 +74,7 @@ def extract_campaign_cards(page) -> list[dict]:
                 "liste_etiket": badge,
             })
         except Exception as e:
+            # Hatalı DOM elemanını yoksayarak sürecin devam etmesini sağla
             print(f"  [Kart parse hatası] {e}")
             continue
             
@@ -83,7 +83,8 @@ def extract_campaign_cards(page) -> list[dict]:
 def click_load_more(page) -> bool:
     """
     'Daha Fazla Yükle' butonuna tıklar.
-    Parent elementi veya kendisi display: none olduğunda is_visible() False döner.
+    Sayfa sonu tespiti (Pagination Control): Buton DOM'da kalsa bile CSS ile 
+    (display: none) gizlendiğinde sonsuz döngüyü önlemek için is_visible() kullanılır.
     """
     try:
         btn = page.query_selector(DAHA_FAZLA_BTN_SELECTOR)
@@ -94,7 +95,8 @@ def click_load_more(page) -> bool:
             return False
             
         btn.click()
-        time.sleep(1.5) # AJAX yüklemesi için kısa tolerans
+        # AJAX isteğinin sunucuya gidip yanıt dönmesi (Network Latency) için bekleme payı
+        time.sleep(1.5) 
         return True
     except PlaywrightTimeout:
         return False
@@ -105,6 +107,8 @@ def click_load_more(page) -> bool:
 def scrape_detail_page(page, url: str) -> dict:
     """
     Detay sayfasına girip başlık ve tam metni çeker.
+    Network hatalarında veya kırık linklerde (404) ana akışın bozulmaması için
+    bağımsız hata yakalama bloklarıyla korunmuştur.
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -137,11 +141,12 @@ def scrape_detail_page(page, url: str) -> dict:
             "detay_hata": str(e),
         }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# Ana Akış
 
 def main():
     ensure_dir(CIKTI_DIZINI)
 
+    # Idempotent yapı: Script tekrar çalıştığında verilerin üst üste binmesini (duplicate) önler
     if os.path.exists(CIKTI_DOSYASI):
         os.remove(CIKTI_DOSYASI)
 
@@ -151,6 +156,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Anti-bot WAF sistemlerini atlatmak için Standart Kullanıcı User-Agent profili taklit edilir
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -178,6 +184,7 @@ def main():
         print("\n[3/3] Kampanya kartları toplanıyor...")
         all_cards = extract_campaign_cards(page)
         
+        # Veritabanı tutarlılığı için URL tabanlı tekrarlayan (duplicate) kayıt engelleme
         seen_urls = set()
         unique_cards = []
         for c in all_cards:
